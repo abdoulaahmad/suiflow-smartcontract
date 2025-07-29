@@ -7,18 +7,19 @@ module suiflow::payment_processor {
     use sui::object::{Self, UID};
     use sui::event;
     use std::string::{Self, String};
+    use std::vector;
 
     // Admin fee: 0.01 SUI (10,000,000 MIST)
     const ADMIN_FEE_MIST: u64 = 10_000_000;
-    
+
     // Error codes
     const EInsufficientAmount: u64 = 1;
+    const EUnauthorized: u64 = 2;
 
     // Payment processor object
     public struct PaymentProcessor has key {
         id: UID,
         admin_address: address,
-        total_fees_collected: Balance<SUI>,
         total_payments_processed: u64,
     }
 
@@ -33,58 +34,58 @@ module suiflow::payment_processor {
         product_id: String,
     }
 
-    // Admin fee withdrawn event
-    public struct AdminFeeWithdrawn has copy, drop {
-        admin_address: address,
-        amount_withdrawn: u64,
+    // Admin address updated event
+    public struct AdminAddressUpdated has copy, drop {
+        old_admin: address,
+        new_admin: address,
     }
 
-    // Initialize the payment processor (called once during deployment)
-    fun init(ctx: &mut TxContext) {
+    // Initialize the payment processor with a given admin wallet
+    public entry fun init(admin_address: address, ctx: &mut TxContext) {
         let processor = PaymentProcessor {
             id: object::new(ctx),
-            admin_address: tx_context::sender(ctx),
-            total_fees_collected: balance::zero(),
+            admin_address,
             total_payments_processed: 0,
         };
-        
+
         // Share the processor object so anyone can use it
         transfer::share_object(processor);
     }
 
-    // Main payment processing function
+    // Main payment function
     public entry fun process_widget_payment(
         processor: &mut PaymentProcessor,
         merchant_address: address,
         merchant_id: vector<u8>,
-        product_id: vector<u8>,
+        product_id: vector<u8>, // Optional, pass empty vec if unused
         payment: Coin<SUI>,
         ctx: &mut TxContext
     ) {
         let payment_amount = coin::value(&payment);
         let customer_address = tx_context::sender(ctx);
-        
-        // Validate minimum payment (admin fee + some amount for merchant)
+
+        // Validate minimum payment
         assert!(payment_amount > ADMIN_FEE_MIST, EInsufficientAmount);
-        
-        // Convert to balance for easier manipulation
+
         let mut payment_balance = coin::into_balance(payment);
-        
-        // Split admin fee
+
+        // Split admin fee and send instantly
         let admin_fee_balance = balance::split(&mut payment_balance, ADMIN_FEE_MIST);
-        balance::join(&mut processor.total_fees_collected, admin_fee_balance);
-        
-        // Remaining goes to merchant
+        let admin_fee_coin = coin::from_balance(admin_fee_balance, ctx);
+        transfer::public_transfer(admin_fee_coin, processor.admin_address);
+
+        // Send remaining to merchant
         let merchant_amount = balance::value(&payment_balance);
         let merchant_coin = coin::from_balance(payment_balance, ctx);
-        
-        // Transfer to merchant
         transfer::public_transfer(merchant_coin, merchant_address);
-        
-        // Update statistics
-        processor.total_payments_processed = processor.total_payments_processed + 1;
-        
+
         // Emit payment event
+        let product_str = if (vector::length(&product_id) == 0) {
+            string::utf8(b"general")
+        } else {
+            string::utf8(product_id)
+        };
+
         event::emit(PaymentCompleted {
             merchant_id: string::utf8(merchant_id),
             merchant_address,
@@ -92,41 +93,34 @@ module suiflow::payment_processor {
             total_amount: payment_amount,
             merchant_received: merchant_amount,
             admin_fee: ADMIN_FEE_MIST,
-            product_id: string::utf8(product_id),
+            product_id: product_str,
         });
+
+        // Update stats
+        processor.total_payments_processed = processor.total_payments_processed + 1;
     }
 
-    // Admin function to withdraw collected fees
-    public entry fun withdraw_admin_fees(
+    // Admin can update the admin wallet address
+    public entry fun update_admin(
         processor: &mut PaymentProcessor,
+        new_admin: address,
         ctx: &mut TxContext
     ) {
-        // Only admin can withdraw
-        assert!(tx_context::sender(ctx) == processor.admin_address, 1);
-        
-        let fee_amount = balance::value(&processor.total_fees_collected);
-        if (fee_amount > 0) {
-            let fee_coin = coin::from_balance(
-                balance::withdraw_all(&mut processor.total_fees_collected), 
-                ctx
-            );
-            transfer::public_transfer(fee_coin, processor.admin_address);
-            
-            // Emit withdrawal event
-            event::emit(AdminFeeWithdrawn {
-                admin_address: processor.admin_address,
-                amount_withdrawn: fee_amount,
-            });
-        }
+        let sender = tx_context::sender(ctx);
+        assert!(sender == processor.admin_address, EUnauthorized);
+
+        let old_admin = processor.admin_address;
+        processor.admin_address = new_admin;
+
+        event::emit(AdminAddressUpdated {
+            old_admin,
+            new_admin,
+        });
     }
 
     // View functions
     public fun get_admin_address(processor: &PaymentProcessor): address {
         processor.admin_address
-    }
-
-    public fun get_total_fees_collected(processor: &PaymentProcessor): u64 {
-        balance::value(&processor.total_fees_collected)
     }
 
     public fun get_total_payments_processed(processor: &PaymentProcessor): u64 {
