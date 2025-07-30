@@ -53,7 +53,7 @@ module suiflow::payment_processor {
         transfer::share_object(processor);
     }
 
-    // Main payment processing function
+    // Main payment function
     public entry fun process_widget_payment(
         processor: &mut PaymentProcessor,
         merchant_address: address,
@@ -65,25 +65,22 @@ module suiflow::payment_processor {
         let payment_amount = coin::value(&payment);
         let customer_address = tx_context::sender(ctx);
         
-        // Validate minimum payment (admin fee + some amount for merchant)
+        // Validate minimum payment (must be more than admin fee)
         assert!(payment_amount > ADMIN_FEE_MIST, EInsufficientAmount);
         
-        // Convert to balance for easier manipulation
-        let mut payment_balance = coin::into_balance(payment);
+        // Calculate amounts
+        let net_amount = payment_amount - ADMIN_FEE_MIST;
         
-        // Split admin fee
+        // Convert coin to balance for splitting
+        let payment_balance = coin::into_balance(payment);
+        
+        // Split admin fee and add to processor balance
         let admin_fee_balance = balance::split(&mut payment_balance, ADMIN_FEE_MIST);
         balance::join(&mut processor.total_fees_collected, admin_fee_balance);
         
-        // Remaining goes to merchant
-        let merchant_amount = balance::value(&payment_balance);
+        // Send remaining amount to merchant
         let merchant_coin = coin::from_balance(payment_balance, ctx);
-        
-        // Transfer to merchant
         transfer::public_transfer(merchant_coin, merchant_address);
-        
-        // Update statistics
-        processor.total_payments_processed = processor.total_payments_processed + 1;
         
         // Emit payment event
         event::emit(PaymentCompleted {
@@ -91,10 +88,13 @@ module suiflow::payment_processor {
             merchant_address,
             customer_address,
             total_amount: payment_amount,
-            merchant_received: merchant_amount,
+            merchant_received: net_amount,
             admin_fee: ADMIN_FEE_MIST,
             product_id: string::utf8(product_id),
         });
+        
+        // Update payment counter
+        processor.total_payments_processed = processor.total_payments_processed + 1;
     }
 
     // Admin function to withdraw collected fees
@@ -121,7 +121,7 @@ module suiflow::payment_processor {
         }
     }
 
-    // View functions
+    // View functions for reading contract state
     public fun get_admin_address(processor: &PaymentProcessor): address {
         processor.admin_address
     }
@@ -138,6 +138,7 @@ module suiflow::payment_processor {
         ADMIN_FEE_MIST
     }
 
+    // Test helper function
     #[test_only]
     public fun init_for_testing(ctx: &mut TxContext) {
         init(ctx);
