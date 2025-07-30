@@ -13,6 +13,7 @@ module suiflow::payment_processor {
     
     // Error codes
     const EInsufficientAmount: u64 = 1;
+    const ENotAuthorized: u64 = 2;
 
     // Payment processor object
     public struct PaymentProcessor has key {
@@ -102,7 +103,7 @@ module suiflow::payment_processor {
         ctx: &mut TxContext
     ) {
         // Only admin can withdraw
-        assert!(tx_context::sender(ctx) == processor.admin_address, 1);
+        assert!(tx_context::sender(ctx) == processor.admin_address, ENotAuthorized);
         
         let fee_amount = balance::value(&processor.total_fees_collected);
         if (fee_amount > 0) {
@@ -135,5 +136,10 @@ module suiflow::payment_processor {
 
     public fun get_admin_fee(): u64 {
         ADMIN_FEE_MIST
+    }
+
+    #[test_only]
+    public fun init_for_testing(ctx: &mut TxContext) {
+        init(ctx);
     }
 }
